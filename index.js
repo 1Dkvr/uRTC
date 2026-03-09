@@ -46,31 +46,63 @@ export class uRTC {
   }
 
   /**
-   * Automatically join a room and connect to peers
-   * @param {string} roomId 
+   * Automatically join a room and connect to peers using a WebSocket signaling server.
+   * Cleans the roomId and ensures a proper URL format before connecting.
+   * @param {string} roomId - The unique identifier for the connection room.
    */
   autoConnect(roomId) {
-    // On enlève le '#' s'il existe et on colle au serveur
-    const cleanId = roomId.replace('#', '');
-    this.socket = new WebSocket(`${this.signalingServer}${cleanId}`);
+    // 1. Clean the roomId: remove leading '#' or '/'
+    const cleanId = roomId.replace(/^#?\/?/, '');
+    
+    // 2. Ensure signalingServer has exactly one trailing slash
+    const baseUrl = this.signalingServer.endsWith('/') 
+        ? this.signalingServer 
+        : this.signalingServer + '/';
+
+    const finalUrl = `${baseUrl}${cleanId}`;
+    
+    console.log(`uRTC: Attempting connection to ${finalUrl}`);
+    this.socket = new WebSocket(finalUrl);
 
     this.socket.onmessage = async (event) => {
-      const msg = JSON.parse(event.data);
+      try {
+        const msg = JSON.parse(event.data);
 
-      if (msg.type === "offer") {
-        await this.acceptOffer(JSON.stringify(msg));
-        // We override onSignal to send the answer back through socket
-        this.onSignal = (answer) => this.socket.send(answer);
-      } 
-      else if (msg.type === "answer") {
-        await this.finalize(JSON.stringify(msg));
+        if (msg.type === "offer") {
+          await this.acceptOffer(JSON.stringify(msg));
+          // Once the offer is accepted, we re-bind onSignal to send the answer
+          this.onSignal = (answer) => {
+            if (this.socket.readyState === WebSocket.OPEN) {
+              this.socket.send(answer);
+            }
+          };
+        } 
+        else if (msg.type === "answer") {
+          await this.finalize(JSON.stringify(msg));
+        }
+      } catch (error) {
+        console.error("uRTC: Failed to process signaling message", error);
       }
     };
 
     this.socket.onopen = () => {
-      // We initiate the offer only if we are the one starting
-      this.onSignal = (offer) => this.socket.send(offer);
+      console.log("uRTC: Signaling socket opened.");
+      // Set the onSignal handler to send the offer through the socket
+      this.onSignal = (offer) => {
+        if (this.socket.readyState === WebSocket.OPEN) {
+          this.socket.send(offer);
+        }
+      };
+      // Initiate the WebRTC offer process
       this.createOffer();
+    };
+
+    this.socket.onerror = (error) => {
+      console.error("uRTC: Signaling WebSocket error", error);
+    };
+
+    this.socket.onclose = () => {
+      console.warn("uRTC: Signaling socket closed.");
     };
   }
 
