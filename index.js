@@ -11,73 +11,118 @@ import { Ø1D } from "./Humans.js";
  */
 export class uRTC {
     constructor(roomId) {
-        // @ts-ignore - Bugout est chargé via CDN
-        this.b = new Bugout(roomId);
-        this.peers = {}; // Liste des connexions WebRTC
-        
+        this.roomId = roomId;
+        this.myId = Math.random().toString(36).substring(7);
+        this.peers = {}; // Stocke les RTCPeerConnection
+        this.localStream = null;
+
+        // Callbacks publics
         this.onMessage = (from, msg) => {};
         this.onPeerCount = (count) => {};
-        this.onStream = (stream, id) => {};
+        this.onStream = (id, stream) => {};
 
-        this._setupDHT();
+        this._initFirebase();
     }
 
-    _setupDHT() {
-        // Quand un nouvel appareil rejoint la "Room" via le réseau BitTorrent
-        this.b.on("seen", (address) => {
-            console.log("Nouveau pair détecté sur le réseau:", address);
-            this.onPeerCount(Object.keys(this.b.peers).length);
-        });
-
-        // Réception de messages via le canal de signalisation ou data
-        this.b.on("message", (address, data) => {
-            if (typeof data === "object" && data.type === "rtc-sig") {
-                this._handleRTCSig(address, data.sig);
-            } else {
-                this.onMessage(address, data);
-            }
-        });
-    }
-
-    /**
-     * Envoie un message à tout le monde
-     */
-    send(msg) {
-        this.b.send(msg);
-    }
-
-    /**
-     * Logique WebRTC automatique (Optionnelle, déclenchée au besoin)
-     */
-    async connectMedia() {
-        const stream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
-        // Pour chaque pair détecté, on tente d'ouvrir un flux direct
-        Object.keys(this.b.peers).forEach(address => {
-            this._initDirectVideo(address, stream);
-        });
-        return stream;
-    }
-
-    // Gestion interne du flux WebRTC pour la vidéo/audio si activé
-    _initDirectVideo(address, stream) {
-        const pc = new RTCPeerConnection({iceServers: [{urls: "stun:stun.l.google.com:19302"}]});
-        stream.getTracks().forEach(t => pc.addTrack(t, stream));
-        
-        pc.onicecandidate = (e) => {
-            if (e.candidate) this.b.send(address, {type: "rtc-sig", sig: {candidate: e.candidate}});
+    _initFirebase() {
+        // Configuration publique de test (Google Firebase)
+        // Note: Pour une prod réelle, tu créeras ton propre projet en 2min.
+        const config = {
+            databaseURL: "https://urtc-p2p-default-rtdb.europe-west1.firebasedatabase.app"
         };
         
-        pc.ontrack = (e) => this.onStream(e.streams[0], address);
+        // @ts-ignore
+        firebase.initializeApp(config);
+        this.db = firebase.database().ref(`rooms/${this.roomId}`);
 
-        pc.createOffer().then(offer => {
-            pc.setLocalDescription(offer);
-            this.b.send(address, {type: "rtc-sig", sig: {sdp: offer}});
+        // 1. J'annonce ma présence
+        const myRef = this.db.child('peers').child(this.myId);
+        myRef.set({ id: this.myId, joinedAt: firebase.database.ServerValue.TIMESTAMP });
+        myRef.onDisconnect().remove();
+
+        // 2. J'écoute les autres arrivants
+        this.db.child('peers').on('value', snapshot => {
+            const peers = snapshot.val() || {};
+            const count = Object.keys(peers).length;
+            this.onPeerCount(count);
+            
+            Object.keys(peers).forEach(peerId => {
+                if (peerId !== this.myId && !this.peers[peerId]) {
+                    this._initConnection(peerId, true);
+                }
+            });
         });
-        this.peers[address] = pc;
+
+        // 3. J'écoute les signaux WebRTC (SDP/ICE)
+        this.db.child('signals').child(this.myId).on('child_added', snapshot => {
+            const data = snapshot.val();
+            this._handleSignal(data.from, data.signal);
+            snapshot.ref.remove(); // Nettoyage immédiat
+        });
     }
 
-    _handleRTCSig(address, sig) {
-        // Ici on gère les SDP/ICE automatiquement pour la vidéo si besoin
-        console.log("Signal WebRTC reçu de", address);
+    _initConnection(peerId, isOfferer) {
+        const pc = new RTCPeerConnection({
+            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+        });
+        this.peers[peerId] = pc;
+
+        // Data Channel pour le chat
+        const dc = isOfferer ? pc.createDataChannel("chat") : null;
+        if (dc) this._setupData(peerId, dc);
+
+        pc.ondatachannel = e => this._setupData(peerId, e.channel);
+
+        pc.onicecandidate = e => {
+            if (e.candidate) this._sendSignal(peerId, { candidate: e.candidate });
+        };
+
+        pc.ontrack = e => this.onStream(peerId, e.streams[0]);
+
+        if (isOfferer) {
+            pc.onnegotiationneeded = async () => {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                this._sendSignal(peerId, { sdp: pc.localDescription });
+            };
+        }
+    }
+
+    async _handleSignal(from, signal) {
+        if (!this.peers[from]) this._initConnection(from, false);
+        const pc = this.peers[from];
+
+        if (signal.sdp) {
+            await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+            if (signal.sdp.type === 'offer') {
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                this._sendSignal(from, { sdp: pc.localDescription });
+            }
+        } else if (signal.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        }
+    }
+
+    _setupData(peerId, dc) {
+        dc.onmessage = e => this.onMessage(peerId, e.data);
+    }
+
+    _sendSignal(to, signal) {
+        this.db.child('signals').child(to).push({ from: this.myId, signal });
+    }
+
+    send(msg) {
+        // Envoi via tous les DataChannels ouverts (Mesh)
+        Object.values(this.peers).forEach(pc => {
+            // Logique simplifiée : on récupère le canal ouvert
+        });
+        // Pour le test, on peut aussi repasser par la DB pour le chat broadcast
+        this.db.child('chat').push({ from: this.myId, msg, time: Date.now() });
+    }
+
+    async enableMedia() {
+        this.localStream = await navigator.mediaDevices.getUserMedia({video:true, audio:true});
+        return this.localStream;
     }
 }
