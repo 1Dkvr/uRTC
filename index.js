@@ -1,10 +1,9 @@
 import { Ø1D } from "./Humans.js";
-//console.warn(Ø1D.branding);
 
 /**
  * @class uRTC
  * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization.
- * @version 1.0.0
+ * @version 1.0.100
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
