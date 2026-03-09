@@ -4,7 +4,7 @@ import { LocalBS } from "https://1dkvr.github.io/FrameKit/core/js/BrowserStorage
 /**
  * @class uRTC
  * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization. Multi-peer WebRTC wrapper for high-speed P2P sync and media.
- * @version 1.0.1423
+ * @version 1.0.1430
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
@@ -54,37 +54,37 @@ export class uRTC {
     }
 
     _autoConnect() {
+        // Fréquence de rafraîchissement : 5 secondes
         setInterval(() => {
-            // On stocke l'ID actuel
-            LocalBS.set('uRTC_last_peer_' + this.room, this.id);
-            
-            // On récupère la liste des peers actifs
-            let allPeers = LocalBS.get('uRTC_active_peers_' + this.room);
-            
-            // Sécurité : si c'est une string, on parse, sinon on initialise
+            // 1. On récupère la liste des peers
+            let allPeers = LocalBS.get('uRTC_active_peers_' + this.room) || {};
             if (typeof allPeers === 'string') allPeers = JSON.parse(allPeers);
-            if (!allPeers || typeof allPeers !== 'object') allPeers = {};
     
-            allPeers[this.id] = Date.now();
-            
-            // Nettoyage des peers inactifs
+            const now = Date.now();
+    
+            // 2. On s'ajoute/met à jour
+            allPeers[this.id] = now;
+    
+            // 3. NETTOYAGE STRICT : On vire tout ce qui n'a pas bougé depuis 15s
             for (let peerId in allPeers) {
-                if (Date.now() - allPeers[peerId] > 5000) delete allPeers[peerId];
+                if (now - allPeers[peerId] > 15000) delete allPeers[peerId];
             }
     
-            // On enregistre (LocalBS s'occupe probablement de la stringification selon sa config)
+            // 4. On sauvegarde
             LocalBS.set('uRTC_active_peers_' + this.room, allPeers);
     
-            // Recherche du partenaire
+            // 5. Tentative de connexion
             const otherId = Object.keys(allPeers).find(pid => pid !== this.id);
             
             if (otherId && !this.connections[otherId]) {
+                // RÈGLE : Le plus "petit" ID appelle le plus "grand"
+                // Ça garantit qu'une seule tentative a lieu à la fois
                 if (this.id < otherId) {
-                    console.log("uRTC: Connexion vers le peer FrameKit :", otherId);
+                    console.log("uRTC: Tentative de liaison vers", otherId);
                     this.connect(otherId);
                 }
             }
-        }, 1000);
+        }, 5000); // 5 secondes pour préserver les perfs
     }
 
     connect(remoteId) {
