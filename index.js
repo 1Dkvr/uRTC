@@ -3,89 +3,64 @@ import { Ø1D } from "./Humans.js";
 /**
  * @class uRTC
  * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization. Multi-peer WebRTC wrapper for high-speed P2P sync and media.
- * @version 1.0.1332
+ * @version 1.0.1335
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
  * @updated 2026-03-09
  */
 export class uRTC {
-    constructor(roomId = "default-room") {
-        this.roomId = roomId;
-        this.myId = "user-" + Math.random().toString(36).slice(2, 6);
-        this.pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+    constructor() {
+        this.pc = new RTCPeerConnection({
+            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+        });
         this.dc = null;
 
-        this.onMessage = (msg) => {};
+        // Callbacks
+        this.onSignal = (sig) => {};
         this.onConnected = () => {};
+        this.onMessage = (msg) => {};
 
-        this._init();
+        this._setup();
     }
 
-    async _init() {
-        // On crée le DataChannel tout de suite
-        this.dc = this.pc.createDataChannel("chat");
-        this._setupDC();
-
-        this.pc.onicecandidate = (e) => {
-            if (e.candidate) this._sendSignal({ candidate: e.candidate });
+    _setup() {
+        // Dès qu'un morceau de chemin réseau est trouvé, on génère le signal
+        this.pc.onicecandidate = () => {
+            this.onSignal(JSON.stringify(this.pc.localDescription));
         };
 
-        // On écoute les offres entrantes sur ton serveur
-        setInterval(() => this._pollSignals(), 2000);
-        
-        console.log("uRTC Ready. ID:", this.myId);
+        // Écoute l'ouverture du canal
+        this.pc.ondatachannel = (e) => this._bindDC(e.channel);
     }
 
-    // Fonction pour générer l'offre (le premier qui clique sur ton bouton)
     async createOffer() {
+        this.dc = this.pc.createDataChannel("chat");
+        this._bindDC(this.dc);
         const offer = await this.pc.createOffer();
         await this.pc.setLocalDescription(offer);
-        await this._sendSignal({ sdp: offer });
+        this.onSignal(JSON.stringify(this.pc.localDescription));
     }
 
-    _setupDC() {
-        this.pc.ondatachannel = (e) => {
-            this.dc = e.channel;
-            this.dc.onmessage = (evt) => this.onMessage(evt.data);
-            this.dc.onopen = () => this.onConnected();
-        };
-        if (this.dc) {
-            this.dc.onmessage = (evt) => this.onMessage(evt.data);
-            this.dc.onopen = () => this.onConnected();
+    async handleSignal(answerStr) {
+        const signal = JSON.parse(answerStr);
+        if (signal.type === "offer") {
+            await this.pc.setRemoteDescription(new RTCSessionDescription(signal));
+            const answer = await this.pc.createAnswer();
+            await this.pc.setLocalDescription(answer);
+            this.onSignal(JSON.stringify(this.pc.localDescription));
+        } else {
+            await this.pc.setRemoteDescription(new RTCSessionDescription(signal));
         }
+    }
+
+    _bindDC(channel) {
+        this.dc = channel;
+        this.dc.onopen = () => this.onConnected();
+        this.dc.onmessage = (e) => this.onMessage(e.data);
     }
 
     send(msg) {
         if (this.dc && this.dc.readyState === "open") this.dc.send(msg);
-    }
-
-    // --- C'est ici que la magie opère sans serveur externe ---
-    // On utilise une API de stockage temporaire gratuite (ou ton serveur)
-    async _sendSignal(data) {
-        await fetch(`https://kvdb.io/S97W8pU8XN9f7z6z2X7p/${this.roomId}`, {
-            method: 'POST',
-            body: JSON.stringify({ from: this.myId, data: data })
-        });
-    }
-
-    async _pollSignals() {
-        const res = await fetch(`https://kvdb.io/S97W8pU8XN9f7z6z2X7p/${this.roomId}`);
-        const text = await res.text();
-        if (!text) return;
-        const msg = JSON.parse(text);
-        
-        if (msg.from === this.myId) return; // Ignorer mon propre message
-
-        if (msg.data.sdp) {
-            await this.pc.setRemoteDescription(new RTCSessionDescription(msg.data.sdp));
-            if (msg.data.sdp.type === "offer") {
-                const answer = await this.pc.createAnswer();
-                await this.pc.setLocalDescription(answer);
-                this._sendSignal({ sdp: answer });
-            }
-        } else if (msg.data.candidate) {
-            try { await this.pc.addIceCandidate(new RTCIceCandidate(msg.data.candidate)); } catch(e) {}
-        }
     }
 }
