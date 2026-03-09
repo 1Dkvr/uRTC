@@ -3,7 +3,7 @@ import { Ø1D } from "./Humans.js";
 /**
  * @class uRTC
  * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization. Multi-peer WebRTC wrapper for high-speed P2P sync and media.
- * @version 1.0.1410
+ * @version 1.0.1411
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
@@ -33,10 +33,18 @@ export class uRTC {
         this._startPeer();
     }
 
+    _autoConnect() {
+        const lastPeer = localStorage.getItem('uRTC_last_peer_' + this.room);
+        // Si un ID existe et que ce n'est pas le mien, je tente la connexion
+        if (lastPeer && lastPeer !== this.id) {
+            console.log("uRTC: Tentative de connexion automatique vers", lastPeer);
+            this.connect(lastPeer);
+        }
+        // J'enregistre mon ID pour les futurs onglets
+        localStorage.setItem('uRTC_last_peer_' + this.room, this.id);
+    }
+
     _startPeer() {
-        // On utilise le nom de la room comme base pour se trouver
-        // Un utilisateur sera le "Lobby" (le nom de la room fixe)
-        // Les autres seront des "Clients"
         this.peer = new Peer();
 
         this.peer.on('open', (id) => {
@@ -45,28 +53,20 @@ export class uRTC {
             this._autoConnect();
         });
 
-        this.peer.on('connection', (conn) => {
-            this._setupConn(conn);
-        });
+        this.peer.on('connection', (conn) => this._setupConn(conn));
 
         this.peer.on('error', (err) => {
-            console.error("PeerJS Error:", err.type);
-            // Si l'ID est déjà pris, on ne panique pas, on en génère un autre
-            if (err.type === 'unavailable-id') setTimeout(() => this._startPeer(), 1000);
+            console.warn("uRTC Peer Error:", err.type);
+            
+            // SI L'AUTRE N'EST PAS ENCORE PRÊT, ON RÉESSAIE DANS 2 SECONDES
+            if (err.type === 'peer-unavailable') {
+                const lastPeer = localStorage.getItem('uRTC_last_peer_' + this.room);
+                if (lastPeer) {
+                    console.log("uRTC: Peer pas encore prêt, nouvel essai dans 2s...");
+                    setTimeout(() => this.connect(lastPeer), 2000);
+                }
+            }
         });
-    }
-
-    _autoConnect() {
-        // Cette partie est cruciale : on essaie de se connecter à la "Room"
-        // Si ça échoue, c'est qu'on est le premier, donc on devient la Room.
-        // Pour simplifier, on va utiliser le localStorage pour s'échanger l'ID en local
-        // et un système de retry pour le distant.
-        
-        const lastPeer = localStorage.getItem('uRTC_last_peer_' + this.room);
-        if (lastPeer && lastPeer !== this.id) {
-            this.connect(lastPeer);
-        }
-        localStorage.setItem('uRTC_last_peer_' + this.room, this.id);
     }
 
     connect(remoteId) {
