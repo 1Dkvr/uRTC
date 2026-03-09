@@ -11,22 +11,20 @@ import { Ø1D } from "./Humans.js";
  * @updated 2026-03-09
  */
 export class uRTC {
-  /**
-   * @param {Object} config - Configuration object
-   */
   constructor(config = {}) {
     this.config = {
-      iceServers: config.iceServers || [
-        { urls: "stun:stun.l.google.com:19302" }
-      ],
+      iceServers: config.iceServers || [{ urls: "stun:stun.l.google.com:19302" }]
     };
 
     this.connection = new RTCPeerConnection(this.config);
     this.dataChannel = null;
+
+    // Internal state
     this._receiveBuffer = [];
     this._receivedSize = 0;
     this._currentFileMeta = null;
 
+    // Public Events
     this.onOpen = () => {};
     this.onData = (data) => {};
     this.onSignal = (signal) => {};
@@ -35,42 +33,11 @@ export class uRTC {
 
     this._setupICE();
     this._listenForRemoteChannel();
-
-    // On utilise un service qui bypass souvent les filtres : PeerJS public local
-    this.signalingServer = config.signalingServer || "wss://0.peerjs.com/peerjs?key=peerjs&id=";
-    this.socket = null;
   }
 
-  autoConnect(roomId) {
-    // On génère un ID unique pour cette session pour ne pas s'auto-connecter
-    const clientId = Math.random().toString(36).substring(7);
-    const finalUrl = `${this.signalingServer}${clientId}&room=${roomId.replace('#','')}`;
-    
-    console.log(`uRTC: Trying PeerJS Public Relay -> ${finalUrl}`);
-    this.socket = new WebSocket(finalUrl);
-
-    this.socket.onmessage = async (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "offer") {
-          await this.acceptOffer(JSON.stringify(msg));
-          this.onSignal = (ans) => this.socket.send(ans);
-        } else if (msg.type === "answer") {
-          await this.finalize(JSON.stringify(msg));
-        }
-      } catch (e) {}
-    };
-
-    this.socket.onopen = () => {
-      console.log("uRTC: Socket OPEN!");
-      this.onSignal = (off) => this.socket.send(off);
-      this.createOffer();
-    };
-
-    this.socket.onerror = (e) => console.error("uRTC: Socket Error", e);
-    this.socket.onclose = () => console.warn("uRTC: Socket Closed");
-  }
-
+  /**
+   * Generates an offer to be sent to a peer
+   */
   async createOffer() {
     this.dataChannel = this.connection.createDataChannel("uRTC-Bus");
     this._bindChannelEvents();
@@ -78,16 +45,19 @@ export class uRTC {
     await this.connection.setLocalDescription(offer);
   }
 
-  async acceptOffer(remoteSdp) {
-    const desc = new RTCSessionDescription(JSON.parse(remoteSdp));
-    await this.connection.setRemoteDescription(desc);
-    const answer = await this.connection.createAnswer();
-    await this.connection.setLocalDescription(answer);
-  }
-
-  async finalize(remoteAnswer) {
-    const desc = new RTCSessionDescription(JSON.parse(remoteAnswer));
-    await this.connection.setRemoteDescription(desc);
+  /**
+   * Accepts a remote signal (Offer or Answer)
+   * @param {string} signalData - The JSON stringified SDP
+   */
+  async handleSignal(signalData) {
+    const signal = JSON.parse(signalData);
+    if (signal.type === "offer") {
+      await this.connection.setRemoteDescription(new RTCSessionDescription(signal));
+      const answer = await this.connection.createAnswer();
+      await this.connection.setLocalDescription(answer);
+    } else if (signal.type === "answer") {
+      await this.connection.setRemoteDescription(new RTCSessionDescription(signal));
+    }
   }
 
   send(payload) {
@@ -100,7 +70,6 @@ export class uRTC {
     if (!this._isChannelReady()) return;
     const CHUNK_SIZE = 16384;
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-    
     this.send({ type: 'file-meta', name: file.name, size: file.size });
 
     for (let i = 0; i < totalChunks; i++) {
@@ -112,19 +81,19 @@ export class uRTC {
     }
   }
 
-  // --- PRIVATE METHODS ---
+  // --- PRIVATE ---
 
   _setupICE() {
-    this.connection.onicecandidate = (event) => {
-      if (!event.candidate && this.connection.localDescription) {
+    this.connection.onicecandidate = (e) => {
+      if (!e.candidate && this.connection.localDescription) {
         this.onSignal(JSON.stringify(this.connection.localDescription));
       }
     };
   }
 
   _listenForRemoteChannel() {
-    this.connection.ondatachannel = (event) => {
-      this.dataChannel = event.channel;
+    this.connection.ondatachannel = (e) => {
+      this.dataChannel = e.channel;
       this._bindChannelEvents();
     };
   }
@@ -132,7 +101,7 @@ export class uRTC {
   _bindChannelEvents() {
     if (!this.dataChannel) return;
     this.dataChannel.onopen = () => this.onOpen();
-    this.dataChannel.onmessage = (event) => this._handleMessage(event.data);
+    this.dataChannel.onmessage = (e) => this._handleMessage(e.data);
   }
 
   _handleMessage(data) {
@@ -151,9 +120,8 @@ export class uRTC {
     }
     try {
       const msg = JSON.parse(data);
-      if (msg.type === 'file-meta') { this._currentFileMeta = msg; }
-      else if (msg.type === 'json') { this.onData(msg.content); }
-      else { this.onData(data); }
+      if (msg.type === 'file-meta') this._currentFileMeta = msg;
+      else if (msg.type === 'json') this.onData(msg.content);
     } catch (e) { this.onData(data); }
   }
 
