@@ -3,7 +3,7 @@ import { Ø1D } from "./Humans.js";
 /**
  * @class uRTC
  * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization. Multi-peer WebRTC wrapper for high-speed P2P sync and media.
- * @version 1.0.1335
+ * @version 1.0.1349
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
