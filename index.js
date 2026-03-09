@@ -3,7 +3,7 @@ import { Ø1D } from "./Humans.js";
 /**
  * @class uRTC
  * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization. Multi-peer WebRTC wrapper for high-speed P2P sync and media.
- * @version 1.0.1355
+ * @version 1.0.1357
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
@@ -30,12 +30,11 @@ export class uRTC {
             });
         }
 
-        // Connexion ultra-rapide au broker
         this.mqtt = mqtt.connect('wss://test.mosquitto.org:8081');
         
         this.mqtt.on('connect', () => {
             this.mqtt.subscribe(`uRTC/${this.room}`);
-            // On signale notre présence IMMÉDIATEMENT
+            // On crie "HELLO" pour voir s'il y a quelqu'un
             this._send({ type: "hello" });
         });
 
@@ -43,45 +42,59 @@ export class uRTC {
             const m = JSON.parse(p.toString());
             if (m.from === this.id) return;
 
-            if (m.type === "hello") this._init(m.from, true); // On a trouvé un pair
-            if (m.type === "offer") this._handleOffer(m.from, m.sdp);
-            if (m.type === "answer") this.pc?.setRemoteDescription(m.sdp);
-            if (m.type === "candidate") this.pc?.addIceCandidate(m.candidate).catch(e=>{});
+            // LOGIQUE DE RÉPONSE INSTANTANÉE
+            if (m.type === "hello") {
+                this._init(m.from, true); 
+            }
+            if (m.type === "offer") {
+                this._handleOffer(m.from, m.sdp);
+            }
+            if (m.type === "answer") {
+                this.pc.setRemoteDescription(new RTCSessionDescription(m.sdp));
+            }
+            if (m.type === "candidate") {
+                this.pc.addIceCandidate(new RTCIceCandidate(m.candidate)).catch(() => {});
+            }
         });
     }
 
     _init(remoteId, isOfferer) {
-        if (this.pc) return; // Déjà en cours
-        
+        if (this.pc) return; 
+
+        // CONFIGURATION AGRESSIVE
         this.pc = new RTCPeerConnection({
             iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-            iceCandidatePoolSize: 10 // On pré-chauffe les ports
+            iceTransportPolicy: 'all',
+            bundlePolicy: 'max-bundle',
+            rtcpMuxPolicy: 'require'
         });
 
-        // TRICKLE ICE : On envoie chaque candidat dès qu'il sort
         this.pc.onicecandidate = (e) => {
-            if (e.candidate) this._send({ type: "candidate", candidate: e.candidate });
+            if (e.candidate) {
+                this._send({ type: "candidate", candidate: e.candidate });
+            }
         };
 
+        // On définit le DataChannel AVANT de créer l'offre
+        this.dc = this.pc.createDataChannel("chat", { negotiated: true, id: 0 });
+        this._setupDC();
+
         if (isOfferer) {
-            this.dc = this.pc.createDataChannel("chat", { negotiated: true, id: 0 });
-            this._setupDC();
-            this.pc.createOffer().then(o => {
-                this.pc.setLocalDescription(o);
-                this._send({ type: "offer", sdp: o });
-            });
-        } else {
-            this.dc = this.pc.createDataChannel("chat", { negotiated: true, id: 0 });
-            this._setupDC();
+            this.pc.createOffer()
+                .then(o => this.pc.setLocalDescription(o))
+                .then(() => {
+                    // ON ENVOIE L'OFFRE TOUT DE SUITE, SANS ATTENDRE LES CANDIDATS
+                    this._send({ type: "offer", sdp: this.pc.localDescription });
+                });
         }
     }
 
     async _handleOffer(remoteId, sdp) {
         this._init(remoteId, false);
-        await this.pc.setRemoteDescription(sdp);
+        await this.pc.setRemoteDescription(new RTCSessionDescription(sdp));
         const a = await this.pc.createAnswer();
         await this.pc.setLocalDescription(a);
-        this._send({ type: "answer", sdp: a });
+        this._send({ type: "answer", sdp: this.pc.localDescription });
     }
 
     _setupDC() {
@@ -94,5 +107,7 @@ export class uRTC {
         this.mqtt.publish(`uRTC/${this.room}`, JSON.stringify(data));
     }
 
-    send(m) { if(this.dc?.readyState === "open") this.dc.send(m); }
+    send(m) { 
+        if(this.dc && this.dc.readyState === "open") this.dc.send(m); 
+    }
 }
