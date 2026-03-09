@@ -12,19 +12,17 @@ import { Ø1D } from "./Humans.js";
 export class uRTC {
   constructor(config = {}) {
     this.config = {
-      // Un seul serveur STUN rapide pour éviter les timeouts
+      // On garde Google pour la stabilité
       iceServers: config.iceServers || [{ urls: "stun:stun.l.google.com:19302" }]
     };
 
     this.connection = new RTCPeerConnection(this.config);
     this.dataChannel = null;
 
-    // État interne pour les fichiers
     this._receiveBuffer = [];
     this._receivedSize = 0;
     this._currentFileMeta = null;
 
-    // Événements Publics
     this.onOpen = () => {};
     this.onData = (data) => {};
     this.onSignal = (signal) => {};
@@ -36,7 +34,7 @@ export class uRTC {
   }
 
   /**
-   * Crée une offre WebRTC et déclenche onSignal immédiatement.
+   * Crée l'offre et prépare le terrain.
    */
   async createOffer() {
     try {
@@ -45,53 +43,63 @@ export class uRTC {
 
       const offer = await this.connection.createOffer();
       await this.connection.setLocalDescription(offer);
-
-      // OPTIMISATION : On n'attend pas les candidats ICE. 
-      // On envoie la description locale dès qu'elle est prête.
-      this.onSignal(JSON.stringify(this.connection.localDescription));
+      
+      // On envoie la base tout de suite (instantané)
+      this._emitSignal();
     } catch (err) {
-      console.error("uRTC: Error creating offer", err);
+      console.error("uRTC: Create Offer Error", err);
     }
   }
 
   /**
-   * Gère un signal entrant (Offre ou Réponse)
-   * @param {string} signalData - JSON stringifié du SDP
+   * Accepte le signal et génère la réponse.
    */
   async handleSignal(signalData) {
     try {
       const signal = JSON.parse(signalData);
-      const desc = new RTCSessionDescription(signal);
-      await this.connection.setRemoteDescription(desc);
+      await this.connection.setRemoteDescription(new RTCSessionDescription(signal));
 
       if (signal.type === "offer") {
         const answer = await this.connection.createAnswer();
         await this.connection.setLocalDescription(answer);
-        // Envoi immédiat de la réponse
-        this.onSignal(JSON.stringify(this.connection.localDescription));
+        this._emitSignal();
       }
     } catch (err) {
-      console.error("uRTC: Error handling signal", err);
+      console.error("uRTC: Handle Signal Error", err);
     }
   }
 
   /**
-   * Envoie du texte ou un objet JSON
+   * Envoie le signal actuel à l'interface
    */
+  _emitSignal() {
+    if (this.connection.localDescription) {
+      this.onSignal(JSON.stringify(this.connection.localDescription));
+    }
+  }
+
+  _setupICE() {
+    // Dès qu'un chemin réseau (ICE) est trouvé, on met à jour le signal
+    this.connection.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log("uRTC: ICE Candidate found, updating signal...");
+        this._emitSignal();
+      } else {
+        console.log("uRTC: ICE Gathering Complete.");
+      }
+    };
+  }
+
   send(payload) {
     if (!this._isChannelReady()) return;
     const data = typeof payload === "object" ? JSON.stringify({ type: 'json', content: payload }) : payload;
     this.dataChannel.send(data);
   }
 
-  /**
-   * Envoie un fichier par morceaux (chunks)
-   */
   async sendFile(file) {
     if (!this._isChannelReady()) return;
     const CHUNK_SIZE = 16384;
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-    
     this.send({ type: 'file-meta', name: file.name, size: file.size });
 
     for (let i = 0; i < totalChunks; i++) {
@@ -101,18 +109,6 @@ export class uRTC {
       this.dataChannel.send(chunk);
       this.onFileProgress(Math.round(((i + 1) / totalChunks) * 100));
     }
-  }
-
-  // --- MÉTHODES PRIVÉES ---
-
-  _setupICE() {
-    this.connection.onicecandidate = (event) => {
-      // Dès qu'un candidat est trouvé, on met à jour le signal via onSignal
-      // Cela permet de compléter l'offre au fur et à mesure
-      if (this.connection.localDescription) {
-        this.onSignal(JSON.stringify(this.connection.localDescription));
-      }
-    };
   }
 
   _listenForRemoteChannel() {
