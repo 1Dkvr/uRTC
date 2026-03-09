@@ -1,5 +1,5 @@
 import { Ø1D } from "./Humans.js";
-console.warn(Ø1D.branding);
+//console.warn(Ø1D.branding);
 
 /**
  * @class uRTC
@@ -8,12 +8,11 @@ console.warn(Ø1D.branding);
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
- * @updated 26.03.09
+ * @updated 2026-03-09
  */
 export class uRTC {
   /**
    * @param {Object} config - Configuration object
-   * @param {Array} config.iceServers - List of STUN/TURN servers
    */
   constructor(config = {}) {
     this.config = {
@@ -41,25 +40,18 @@ export class uRTC {
     this._setupICE();
     this._listenForRemoteChannel();
 
-    this.signalingServer = config.signalingServer || "wss://signaling.simplewebrtc.com/v1/";
+    // Reliable Public Demo Server (PieSocket)
+    this.signalingServer = config.signalingServer || "wss://free.piesocket.com/v3/demo?api_key=VCXCEuvhGcBDP7XhiJJrvUDvR1eCc4unSMRefCH8&notify=1&room="; 
     this.socket = null;
   }
 
   /**
    * Automatically join a room and connect to peers using a WebSocket signaling server.
-   * Cleans the roomId and ensures a proper URL format before connecting.
    * @param {string} roomId - The unique identifier for the connection room.
    */
   autoConnect(roomId) {
-    // 1. Clean the roomId: remove leading '#' or '/'
     const cleanId = roomId.replace(/^#?\/?/, '');
-    
-    // 2. Ensure signalingServer has exactly one trailing slash
-    const baseUrl = this.signalingServer.endsWith('/') 
-        ? this.signalingServer 
-        : this.signalingServer + '/';
-
-    const finalUrl = `${baseUrl}${cleanId}`;
+    const finalUrl = `${this.signalingServer}${cleanId}`;
     
     console.log(`uRTC: Attempting connection to ${finalUrl}`);
     this.socket = new WebSocket(finalUrl);
@@ -70,40 +62,28 @@ export class uRTC {
 
         if (msg.type === "offer") {
           await this.acceptOffer(JSON.stringify(msg));
-          // Once the offer is accepted, we re-bind onSignal to send the answer
           this.onSignal = (answer) => {
-            if (this.socket.readyState === WebSocket.OPEN) {
-              this.socket.send(answer);
-            }
+            if (this.socket.readyState === WebSocket.OPEN) this.socket.send(answer);
           };
         } 
         else if (msg.type === "answer") {
           await this.finalize(JSON.stringify(msg));
         }
       } catch (error) {
-        console.error("uRTC: Failed to process signaling message", error);
+        // Silently handle non-JSON messages if the server sends them
       }
     };
 
     this.socket.onopen = () => {
       console.log("uRTC: Signaling socket opened.");
-      // Set the onSignal handler to send the offer through the socket
       this.onSignal = (offer) => {
-        if (this.socket.readyState === WebSocket.OPEN) {
-          this.socket.send(offer);
-        }
+        if (this.socket.readyState === WebSocket.OPEN) this.socket.send(offer);
       };
-      // Initiate the WebRTC offer process
       this.createOffer();
     };
 
-    this.socket.onerror = (error) => {
-      console.error("uRTC: Signaling WebSocket error", error);
-    };
-
-    this.socket.onclose = () => {
-      console.warn("uRTC: Signaling socket closed.");
-    };
+    this.socket.onerror = (error) => console.error("uRTC: Signaling WebSocket error", error);
+    this.socket.onclose = () => console.warn("uRTC: Signaling socket closed.");
   }
 
   async createOffer() {
@@ -147,7 +127,7 @@ export class uRTC {
     }
   }
 
-  // --- PRIVATE ---
+  // --- PRIVATE METHODS ---
 
   _setupICE() {
     this.connection.onicecandidate = (event) => {
