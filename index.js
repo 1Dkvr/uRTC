@@ -2,59 +2,57 @@ import { Ø1D } from "./Humans.js";
 
 /**
  * @class uRTC
- * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization.
- * @version 1.0.220
+ * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization. Multi-peer WebRTC wrapper for high-speed P2P sync and media.
+ * @version 1.0.250
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
  * @updated 2026-03-09
  */
 export class uRTC {
-    constructor(config = {}) {
-        this.config = {
-            iceServers: config.iceServers || [{ urls: "stun:stun.l.google.com:19302" }]
-        };
-
-        this.peers = {}; // Stocke les connexions : { peerId: RTCPeerConnection }
-        this.channels = {}; // Stocke les dataChannels : { peerId: RTCDataChannel }
+    constructor(apiKey) {
+        this.apiKey = apiKey; // Ton ID Scaledrone
+        this.drone = null;
+        this.room = null;
+        this.peers = {};
         this.localStream = null;
 
-        // Signaling (WebSocket public ultra-rapide)
-        this.signalingUrl = "wss://signaling.simplewebrtc.com/v1/";
-        this.socket = null;
-        this.myId = Math.random().toString(36).substr(2, 9);
+        // Configuration ICE standard
+        this.config = {
+            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+        };
 
-        // Événements Publics
+        // Callbacks publics
         this.onPeerConnect = (peerId) => {};
         this.onData = (peerId, data) => {};
         this.onStream = (peerId, stream) => {};
     }
 
     /**
-     * Rejoindre une room via un ID unique
+     * Rejoindre une salle de manière automatique
      */
-    join(roomId) {
-        const url = `${this.signalingUrl}${roomId}`;
-        this.socket = new WebSocket(url);
+    join(roomName) {
+        // @ts-ignore - Scaledrone est importé dans le HTML
+        this.drone = new Scaledrone(this.apiKey);
 
-        this.socket.onmessage = async (event) => {
-            const msg = JSON.parse(event.data);
-            if (msg.from === this.myId) return; // Ignorer mes propres messages
+        this.drone.on('open', error => {
+            if (error) return console.error(error);
+            this.room = this.drone.subscribe(`observable-${roomName}`);
+            
+            this.room.on('members', members => {
+                // Si on est plusieurs, on initie la connexion avec les autres
+                members.forEach(member => {
+                    if (member.id !== this.drone.clientId) {
+                        this._initPeer(member.id, true);
+                    }
+                });
+            });
 
-            switch (msg.type) {
-                case "new-peer":
-                    this._createPeer(msg.from, true); // On crée l'offre
-                    break;
-                case "signal":
-                    this._handleSignal(msg.from, msg.data);
-                    break;
-            }
-        };
-
-        this.socket.onopen = () => {
-            // Annoncer mon arrivée à la room
-            this._sendSignaling({ type: "new-peer", from: this.myId });
-        };
+            this.room.on('data', (message, member) => {
+                if (member.id === this.drone.clientId) return;
+                this._handleSignaling(member.id, message);
+            });
+        });
     }
 
     async addStream(videoElementId) {
@@ -63,75 +61,48 @@ export class uRTC {
         return this.localStream;
     }
 
-    /**
-     * Envoie des données à tout le monde
-     */
-    broadcast(data) {
-        const payload = typeof data === 'object' ? JSON.stringify(data) : data;
-        Object.values(this.channels).forEach(ch => {
-            if (ch.readyState === "open") ch.send(payload);
-        });
-    }
-
-    // --- LOGIQUE INTERNE MESH ---
-
-    _createPeer(peerId, isOfferer) {
+    _initPeer(peerId, isOfferer) {
         const pc = new RTCPeerConnection(this.config);
         this.peers[peerId] = pc;
 
-        // Gestion du flux Audio/Vidéo
         if (this.localStream) {
-            this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream));
+            this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream));
         }
 
-        pc.ontrack = (e) => this.onStream(peerId, e.streams[0]);
-
-        pc.onicecandidate = (e) => {
-            if (e.candidate) {
-                this._sendSignaling({ type: "signal", from: this.myId, to: peerId, data: { candidate: e.candidate } });
-            }
+        pc.onicecandidate = e => {
+            if (e.candidate) this._sendSig(peerId, { candidate: e.candidate });
         };
 
+        pc.ontrack = e => this.onStream(peerId, e.streams[0]);
+
         if (isOfferer) {
-            const dc = pc.createDataChannel("uRTC-data");
-            this._setupDataChannel(peerId, dc);
-            pc.createOffer().then(offer => {
-                pc.setLocalDescription(offer);
-                this._sendSignaling({ type: "signal", from: this.myId, to: peerId, data: offer });
-            });
-        } else {
-            pc.ondatachannel = (e) => this._setupDataChannel(peerId, e.channel);
+            pc.onnegotiationneeded = async () => {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                this._sendSig(peerId, { sdp: pc.localDescription });
+            };
         }
+
+        return pc;
     }
 
-    async _handleSignal(peerId, data) {
-        let pc = this.peers[peerId];
-        if (!pc) {
-            this._createPeer(peerId, false);
-            pc = this.peers[peerId];
-        }
+    async _handleSignaling(peerId, message) {
+        if (!this.peers[peerId]) this._initPeer(peerId, false);
+        const pc = this.peers[peerId];
 
-        if (data.sdp) {
-            await pc.setRemoteDescription(new RTCSessionDescription(data));
-            if (data.type === "offer") {
+        if (message.sdp) {
+            await pc.setRemoteDescription(new RTCSessionDescription(message.sdp));
+            if (pc.remoteDescription.type === 'offer') {
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
-                this._sendSignaling({ type: "signal", from: this.myId, to: peerId, data: answer });
+                this._sendSig(peerId, { sdp: pc.localDescription });
             }
-        } else if (data.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } else if (message.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
         }
     }
 
-    _setupDataChannel(peerId, dc) {
-        this.channels[peerId] = dc;
-        dc.onopen = () => this.onPeerConnect(peerId);
-        dc.onmessage = (e) => this.onData(peerId, e.data);
-    }
-
-    _sendSignaling(data) {
-        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-            this.socket.send(JSON.stringify(data));
-        }
+    _sendSig(peerId, data) {
+        this.drone.publish({ room: this.room.name, message: data });
     }
 }
