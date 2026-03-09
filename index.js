@@ -17,73 +17,58 @@ export class uRTC {
   constructor(config = {}) {
     this.config = {
       iceServers: config.iceServers || [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun.l.google.com:19302" }
       ],
     };
 
     this.connection = new RTCPeerConnection(this.config);
     this.dataChannel = null;
-
-    // Internal state
     this._receiveBuffer = [];
     this._receivedSize = 0;
     this._currentFileMeta = null;
 
-    // Public Events
     this.onOpen = () => {};
     this.onData = (data) => {};
     this.onSignal = (signal) => {};
-    this.onFileProgress = (percent) => {};
-    this.onFileReceived = (blob, name) => {};
+    this.onFileProgress = (p) => {};
+    this.onFileReceived = (b, n) => {};
 
     this._setupICE();
     this._listenForRemoteChannel();
 
-    // Reliable Public Demo Server (PieSocket)
-    this.signalingServer = config.signalingServer || "wss://free.piesocket.com/v3/demo?api_key=VCXCEuvhGcBDP7XhiJJrvUDvR1eCc4unSMRefCH8&notify=1&room="; 
+    // On utilise un service qui bypass souvent les filtres : PeerJS public local
+    this.signalingServer = config.signalingServer || "wss://0.peerjs.com/peerjs?key=peerjs&id=";
     this.socket = null;
   }
 
-  /**
-   * Automatically join a room and connect to peers using a WebSocket signaling server.
-   * @param {string} roomId - The unique identifier for the connection room.
-   */
   autoConnect(roomId) {
-    const cleanId = roomId.replace(/^#?\/?/, '');
-    const finalUrl = `${this.signalingServer}${cleanId}`;
+    // On génère un ID unique pour cette session pour ne pas s'auto-connecter
+    const clientId = Math.random().toString(36).substring(7);
+    const finalUrl = `${this.signalingServer}${clientId}&room=${roomId.replace('#','')}`;
     
-    console.log(`uRTC: Attempting connection to ${finalUrl}`);
+    console.log(`uRTC: Trying PeerJS Public Relay -> ${finalUrl}`);
     this.socket = new WebSocket(finalUrl);
 
     this.socket.onmessage = async (event) => {
       try {
         const msg = JSON.parse(event.data);
-
         if (msg.type === "offer") {
           await this.acceptOffer(JSON.stringify(msg));
-          this.onSignal = (answer) => {
-            if (this.socket.readyState === WebSocket.OPEN) this.socket.send(answer);
-          };
-        } 
-        else if (msg.type === "answer") {
+          this.onSignal = (ans) => this.socket.send(ans);
+        } else if (msg.type === "answer") {
           await this.finalize(JSON.stringify(msg));
         }
-      } catch (error) {
-        // Silently handle non-JSON messages if the server sends them
-      }
+      } catch (e) {}
     };
 
     this.socket.onopen = () => {
-      console.log("uRTC: Signaling socket opened.");
-      this.onSignal = (offer) => {
-        if (this.socket.readyState === WebSocket.OPEN) this.socket.send(offer);
-      };
+      console.log("uRTC: Socket OPEN!");
+      this.onSignal = (off) => this.socket.send(off);
       this.createOffer();
     };
 
-    this.socket.onerror = (error) => console.error("uRTC: Signaling WebSocket error", error);
-    this.socket.onclose = () => console.warn("uRTC: Signaling socket closed.");
+    this.socket.onerror = (e) => console.error("uRTC: Socket Error", e);
+    this.socket.onclose = () => console.warn("uRTC: Socket Closed");
   }
 
   async createOffer() {
