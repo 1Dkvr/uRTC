@@ -3,7 +3,7 @@ import { Ø1D } from "./Humans.js";
 /**
  * @class uRTC
  * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization.
- * @version 1.0.210
+ * @version 1.0.200
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
@@ -38,15 +38,12 @@ export class uRTC {
    * Generates an offer to be sent to a peer
    */
   async createOffer() {
+    console.log("uRTC: Button clicked, starting offer..."); // Ajoute ça
     this.dataChannel = this.connection.createDataChannel("uRTC-Bus");
     this._bindChannelEvents();
-
     const offer = await this.connection.createOffer();
     await this.connection.setLocalDescription(offer);
-
-    // VITESSE ULTIME : On envoie l'offre direct, même sans candidats ICE
-    // Les candidats seront ajoutés au fur et à mesure dans le signal
-    this.onSignal(JSON.stringify(this.connection.localDescription));
+    console.log("uRTC: Local description set, gathering ICE..."); // Et ça
   }
 
   /**
@@ -89,18 +86,25 @@ export class uRTC {
 
   _setupICE() {
     this.connection.onicecandidate = (event) => {
-      // Dès qu'on a un candidat ou que c'est fini, on déclenche onSignal
-      // On n'attend plus le "null" final pour envoyer le bloc
-      if (this.connection.localDescription) {
-        this.onSignal(JSON.stringify(this.connection.localDescription));
+      if (event.candidate) {
+        console.log("uRTC: New ICE Candidate found...");
+        // Optionnel : on pourrait envoyer les candidats un par un, 
+        // mais pour ton test manuel, on attend le pack complet.
+      } else {
+        // event.candidate est nul : la recherche est terminée !
+        console.log("uRTC: ICE Gathering Complete.");
+        if (this.connection.localDescription) {
+          this.onSignal(JSON.stringify(this.connection.localDescription));
+        }
       }
     };
 
-    // Optimisation agressive : On surveille le changement d'état
+    // Sécurité pour Mobile : Si après 3 secondes on n'a pas fini, 
+    // on force quand même l'affichage du signal actuel
     this.connection.onicegatheringstatechange = () => {
-      if (this.connection.iceGatheringState === "complete" || 
-          this.connection.iceGatheringState === "gathering") {
-         this.onSignal(JSON.stringify(this.connection.localDescription));
+      console.log("uRTC: Gathering State ->", this.connection.iceGatheringState);
+      if (this.connection.iceGatheringState === "complete") {
+        this.onSignal(JSON.stringify(this.connection.localDescription));
       }
     };
   }
