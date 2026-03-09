@@ -1,3 +1,7 @@
+import Ø1D from "./Humans.js";
+
+console.warn(Ø1D.branding);
+
 /**
  * uRTC - Wrapper WebRTC Universel & Gratuit
  * @author 1D
