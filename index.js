@@ -1,4 +1,4 @@
-import Ø1D from "./Humans.js";
+import { Ø1D } from "./Humans.js";
 
 console.warn(Ø1D.branding);
 
