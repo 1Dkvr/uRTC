@@ -1,6 +1,6 @@
 import { Ø1D } from "./Humans.js";
 
-console.warn(Ø1D.branding);
+console.warn(Ø1D.brand);
 
 /**
  * @class uRTC
