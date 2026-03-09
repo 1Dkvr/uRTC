@@ -3,110 +3,158 @@ import { LocalBS } from "https://1dkvr.github.io/FrameKit/core/js/BrowserStorage
 
 /**
  * @class uRTC
- * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization. Multi-peer WebRTC wrapper for high-speed P2P sync and media.
- * @version 1.0.1432
+ * @description Full Mesh Peer-to-Peer. End-to-End Encrypted (Native WebRTC)
+ * @version 1.3.1623
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
  * @updated 2026-03-09
  */
 export class uRTC {
-    constructor(roomName = "default-room") {
-        this.room = roomName.replace(/[^a-zA-Z0-9]/g, '');
-        this.id = null;
-        this.peer = null;
-        this.connections = {};
-        this.onConnected = () => {};
-        this.onMessage = (m) => {};
-        this._loadAndInit();
+    constructor(config = {}) {
+        this.room = config.room || 'lobby';
+        this.userId = this._getPersistentId();
+        this.peers = {}; // Stockage des objets DataConnection
+        this.storageKey = `uRTC_room_${this.room}`;
+        
+        // Callbacks pour l'intégration API
+        this.onMessage = config.onMessage || (() => {});
+        this.onStatusChange = config.onStatusChange || (() => {});
+        
+        this._initPeer();
     }
 
-    async _loadAndInit() {
-        if (!window.Peer) {
-            await new Promise(r => {
-                const s = document.createElement('script');
-                s.src = "https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js";
-                s.onload = r; document.head.appendChild(s);
+    /**
+     * INITIALISATION DU NOEUD
+     */
+    _initPeer() {
+        this.instance = new Peer(this.userId, {
+            host: '0.peerjs.com',
+            port: 443,
+            secure: true,
+            config: { 'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }] }
+        });
+
+        this.instance.on('open', (id) => {
+            console.log(`[uRTC] Noeud actif: ${id}`);
+            this._startDiscovery();
+        });
+
+        // Gestionnaire d'appels entrants (Serveur)
+        this.instance.on('connection', (conn) => this._bindEvents(conn));
+        
+        this.instance.on('error', (err) => this._handleError(err));
+    }
+
+    /**
+     * DÉCOUVERTE ET MAILLAGE AUTOMATIQUE
+     */
+    _startDiscovery() {
+        const heartbeat = () => {
+            let registry = LocalBS.get(this.storageKey) || {};
+            registry[this.userId] = Date.now();
+
+            // Nettoyage des noeuds fantômes (TTL 15s)
+            for (let id in registry) {
+                if (Date.now() - registry[id] > 15000) delete registry[id];
+            }
+            LocalBS.set(this.storageKey, registry);
+
+            // Strategie de maillage: Le plus petit ID initie la connexion
+            Object.keys(registry).forEach(targetId => {
+                if (targetId !== this.userId && !this.peers[targetId]) {
+                    if (this.userId < targetId) {
+                        this.connect(targetId);
+                    }
+                }
             });
-        }
-        this._startPeer();
+        };
+
+        setInterval(heartbeat, 5000);
+        heartbeat();
     }
 
-    _startPeer() {
-        this.peer = new Peer();
-        this.peer.on('open', (id) => {
-            this.id = id;
-            console.log("uRTC: Mon ID est " + id);
-            // 1. On lance une première vérification IMMÉDIATE
-            this._checkPeers(); 
-            // 2. Puis on surveille toutes les 5 secondes
-            setInterval(() => this._checkPeers(), 5000);
-        });
-
-        this.peer.on('connection', (conn) => this._setupConn(conn));
-        
-        this.peer.on('error', (err) => {
-            if (err.type === 'peer-unavailable') {
-                console.log("uRTC: Le partenaire n'est pas encore prêt...");
-            }
-        });
+    /**
+     * LOGIQUE DE CONNEXION (Client)
+     */
+    connect(targetId) {
+        if (this.peers[targetId]) return;
+        const conn = this.instance.connect(targetId, { reliable: true });
+        this._bindEvents(conn);
     }
 
-    _checkPeers() {
-        if (!this.id) return;
-
-        let allPeers = LocalBS.get('uRTC_active_peers_' + this.room) || {};
-        if (typeof allPeers === 'string') allPeers = JSON.parse(allPeers);
-
-        const now = Date.now();
-        allPeers[this.id] = now;
-
-        // Nettoyage des vieux peers (> 15s)
-        for (let pid in allPeers) {
-            if (now - allPeers[pid] > 15000) delete allPeers[pid];
-        }
-
-        LocalBS.set('uRTC_active_peers_' + this.room, allPeers);
-
-        // Recherche d'un partenaire
-        const otherId = Object.keys(allPeers).find(pid => pid !== this.id);
-        
-        if (otherId && !this.connections[otherId]) {
-            // Politesse : le plus petit ID appelle
-            if (this.id < otherId) {
-                console.log("uRTC: Tentative de liaison vers", otherId);
-                this.connect(otherId);
-            } else {
-                console.log("uRTC: J'attends l'appel de", otherId);
-            }
-        }
-    }
-
-    connect(remoteId) {
-        if (this.connections[remoteId]) return;
-        const conn = this.peer.connect(remoteId, { 
-            serialization: "json",
-            reliable: true 
-        });
-        this._setupConn(conn);
-    }
-
-    _setupConn(conn) {
+    /**
+     * BINDING DES ÉVÉNEMENTS DE FLUX
+     */
+    _bindEvents(conn) {
         conn.on('open', () => {
-            if (this.connections[conn.peer]) return;
-            this.connections[conn.peer] = conn;
-            this.onConnected();
-            console.log("uRTC: ✅ CONNECTÉ À " + conn.peer);
+            this.peers[conn.peer] = conn;
+            this.onStatusChange(this.getStats());
+            console.log(`[uRTC] Canal sécurisé avec ${conn.peer}`);
         });
 
-        conn.on('data', (data) => this.onMessage(data));
-        conn.on('close', () => delete this.connections[conn.peer]);
-        conn.on('error', () => {});
+        conn.on('data', (data) => {
+            // Ici, on reçoit un objet structuré
+            this.onMessage(data, conn.peer);
+        });
+
+        conn.on('close', () => {
+            delete this.peers[conn.peer];
+            this.onStatusChange(this.getStats());
+        });
     }
 
-    send(msg) {
-        Object.values(this.connections).forEach(conn => {
-            if (conn.open) conn.send(msg);
+    /**
+     * ENVOI MULTI-DESTINATAIRE (Broadcast)
+     * Supporte: String, Object, ArrayBuffer, Blob
+     */
+    broadcast(payload, type = 'text') {
+        const envelope = {
+            type: type,
+            payload: payload,
+            timestamp: new Date().toISOString(),
+            sender: this.userId
+        };
+
+        Object.values(this.peers).forEach(conn => {
+            if (conn.open) conn.send(envelope);
         });
+        
+        return envelope;
+    }
+
+    /**
+     * UTILITAIRES
+     */
+    _getPersistentId() {
+        let id = LocalBS.get('uRTC_guid');
+        if (!id) {
+            id = 'dev_' + Math.random().toString(36).substring(2, 9);
+            LocalBS.set('uRTC_guid', id);
+        }
+        return id;
+    }
+
+    _handleError(err) {
+        if (err.type === 'peer-unavailable') {
+            const ghostId = err.message.split(' ').pop();
+            this._removeNodeFromRegistry(ghostId);
+        }
+        console.error(`[uRTC Error] ${err.type}`);
+    }
+
+    _removeNodeFromRegistry(id) {
+        let db = LocalBS.get(this.storageKey) || {};
+        delete db[id];
+        LocalBS.set(this.storageKey, db);
+    }
+
+    getStats() {
+        return {
+            myId: this.userId,
+            room: this.room,
+            activeConnections: Object.keys(this.peers).length,
+            nodes: Object.keys(this.peers)
+        };
     }
 }
