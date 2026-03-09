@@ -50,7 +50,9 @@ export class uRTC {
    * @param {string} roomId 
    */
   autoConnect(roomId) {
-    this.socket = new WebSocket(`${this.signalingServer}/${roomId}`);
+    // On enlève le '#' s'il existe et on colle au serveur
+    const cleanId = roomId.replace('#', '');
+    this.socket = new WebSocket(`${this.signalingServer}${cleanId}`);
 
     this.socket.onmessage = async (event) => {
       const msg = JSON.parse(event.data);
