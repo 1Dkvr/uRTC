@@ -10,142 +10,128 @@ import { Ø1D } from "./Humans.js";
  * @updated 2026-03-09
  */
 export class uRTC {
-  constructor(config = {}) {
-    this.config = {
-      // On garde Google pour la stabilité
-      iceServers: config.iceServers || [{ urls: "stun:stun.l.google.com:19302" }]
-    };
+    constructor(config = {}) {
+        this.config = {
+            iceServers: config.iceServers || [{ urls: "stun:stun.l.google.com:19302" }]
+        };
 
-    this.connection = new RTCPeerConnection(this.config);
-    this.dataChannel = null;
+        this.peers = {}; // Stocke les connexions : { peerId: RTCPeerConnection }
+        this.channels = {}; // Stocke les dataChannels : { peerId: RTCDataChannel }
+        this.localStream = null;
 
-    this._receiveBuffer = [];
-    this._receivedSize = 0;
-    this._currentFileMeta = null;
+        // Signaling (WebSocket public ultra-rapide)
+        this.signalingUrl = "wss://signaling.simplewebrtc.com/v1/";
+        this.socket = null;
+        this.myId = Math.random().toString(36).substr(2, 9);
 
-    this.onOpen = () => {};
-    this.onData = (data) => {};
-    this.onSignal = (signal) => {};
-    this.onFileProgress = (p) => {};
-    this.onFileReceived = (blob, name) => {};
-
-    this._setupICE();
-    this._listenForRemoteChannel();
-  }
-
-  /**
-   * Crée l'offre et prépare le terrain.
-   */
-  async createOffer() {
-    try {
-      this.dataChannel = this.connection.createDataChannel("uRTC-Bus");
-      this._bindChannelEvents();
-
-      const offer = await this.connection.createOffer();
-      await this.connection.setLocalDescription(offer);
-      
-      // On envoie la base tout de suite (instantané)
-      this._emitSignal();
-    } catch (err) {
-      console.error("uRTC: Create Offer Error", err);
+        // Événements Publics
+        this.onPeerConnect = (peerId) => {};
+        this.onData = (peerId, data) => {};
+        this.onStream = (peerId, stream) => {};
     }
-  }
 
-  /**
-   * Accepte le signal et génère la réponse.
-   */
-  async handleSignal(signalData) {
-    try {
-      const signal = JSON.parse(signalData);
-      await this.connection.setRemoteDescription(new RTCSessionDescription(signal));
+    /**
+     * Rejoindre une room via un ID unique
+     */
+    join(roomId) {
+        const url = `${this.signalingUrl}${roomId}`;
+        this.socket = new WebSocket(url);
 
-      if (signal.type === "offer") {
-        const answer = await this.connection.createAnswer();
-        await this.connection.setLocalDescription(answer);
-        this._emitSignal();
-      }
-    } catch (err) {
-      console.error("uRTC: Handle Signal Error", err);
+        this.socket.onmessage = async (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.from === this.myId) return; // Ignorer mes propres messages
+
+            switch (msg.type) {
+                case "new-peer":
+                    this._createPeer(msg.from, true); // On crée l'offre
+                    break;
+                case "signal":
+                    this._handleSignal(msg.from, msg.data);
+                    break;
+            }
+        };
+
+        this.socket.onopen = () => {
+            // Annoncer mon arrivée à la room
+            this._sendSignaling({ type: "new-peer", from: this.myId });
+        };
     }
-  }
 
-  /**
-   * Envoie le signal actuel à l'interface
-   */
-  _emitSignal() {
-    if (this.connection.localDescription) {
-      this.onSignal(JSON.stringify(this.connection.localDescription));
+    async addStream(videoElementId) {
+        this.localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        if (videoElementId) document.getElementById(videoElementId).srcObject = this.localStream;
+        return this.localStream;
     }
-  }
 
-  _setupICE() {
-    // Dès qu'un chemin réseau (ICE) est trouvé, on met à jour le signal
-    this.connection.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log("uRTC: ICE Candidate found, updating signal...");
-        this._emitSignal();
-      } else {
-        console.log("uRTC: ICE Gathering Complete.");
-      }
-    };
-  }
-
-  send(payload) {
-    if (!this._isChannelReady()) return;
-    const data = typeof payload === "object" ? JSON.stringify({ type: 'json', content: payload }) : payload;
-    this.dataChannel.send(data);
-  }
-
-  async sendFile(file) {
-    if (!this._isChannelReady()) return;
-    const CHUNK_SIZE = 16384;
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-    this.send({ type: 'file-meta', name: file.name, size: file.size });
-
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * CHUNK_SIZE;
-      const end = Math.min(start + CHUNK_SIZE, file.size);
-      const chunk = await file.slice(start, end).arrayBuffer();
-      this.dataChannel.send(chunk);
-      this.onFileProgress(Math.round(((i + 1) / totalChunks) * 100));
+    /**
+     * Envoie des données à tout le monde
+     */
+    broadcast(data) {
+        const payload = typeof data === 'object' ? JSON.stringify(data) : data;
+        Object.values(this.channels).forEach(ch => {
+            if (ch.readyState === "open") ch.send(payload);
+        });
     }
-  }
 
-  _listenForRemoteChannel() {
-    this.connection.ondatachannel = (event) => {
-      this.dataChannel = event.channel;
-      this._bindChannelEvents();
-    };
-  }
+    // --- LOGIQUE INTERNE MESH ---
 
-  _bindChannelEvents() {
-    if (!this.dataChannel) return;
-    this.dataChannel.onopen = () => this.onOpen();
-    this.dataChannel.onmessage = (event) => this._handleMessage(event.data);
-  }
+    _createPeer(peerId, isOfferer) {
+        const pc = new RTCPeerConnection(this.config);
+        this.peers[peerId] = pc;
 
-  _handleMessage(data) {
-    if (data instanceof ArrayBuffer) {
-      this._receiveBuffer.push(data);
-      this._receivedSize += data.byteLength;
-      if (this._currentFileMeta) {
-        this.onFileProgress(Math.round((this._receivedSize / this._currentFileMeta.size) * 100));
-        if (this._receivedSize === this._currentFileMeta.size) {
-          const blob = new Blob(this._receiveBuffer);
-          this.onFileReceived(blob, this._currentFileMeta.name);
-          this._receiveBuffer = []; this._receivedSize = 0;
+        // Gestion du flux Audio/Vidéo
+        if (this.localStream) {
+            this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream));
         }
-      }
-      return;
-    }
-    try {
-      const msg = JSON.parse(data);
-      if (msg.type === 'file-meta') this._currentFileMeta = msg;
-      else if (msg.type === 'json') this.onData(msg.content);
-    } catch (e) { this.onData(data); }
-  }
 
-  _isChannelReady() {
-    return this.dataChannel && this.dataChannel.readyState === "open";
-  }
+        pc.ontrack = (e) => this.onStream(peerId, e.streams[0]);
+
+        pc.onicecandidate = (e) => {
+            if (e.candidate) {
+                this._sendSignaling({ type: "signal", from: this.myId, to: peerId, data: { candidate: e.candidate } });
+            }
+        };
+
+        if (isOfferer) {
+            const dc = pc.createDataChannel("uRTC-data");
+            this._setupDataChannel(peerId, dc);
+            pc.createOffer().then(offer => {
+                pc.setLocalDescription(offer);
+                this._sendSignaling({ type: "signal", from: this.myId, to: peerId, data: offer });
+            });
+        } else {
+            pc.ondatachannel = (e) => this._setupDataChannel(peerId, e.channel);
+        }
+    }
+
+    async _handleSignal(peerId, data) {
+        let pc = this.peers[peerId];
+        if (!pc) {
+            this._createPeer(peerId, false);
+            pc = this.peers[peerId];
+        }
+
+        if (data.sdp) {
+            await pc.setRemoteDescription(new RTCSessionDescription(data));
+            if (data.type === "offer") {
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                this._sendSignaling({ type: "signal", from: this.myId, to: peerId, data: answer });
+            }
+        } else if (data.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        }
+    }
+
+    _setupDataChannel(peerId, dc) {
+        this.channels[peerId] = dc;
+        dc.onopen = () => this.onPeerConnect(peerId);
+        dc.onmessage = (e) => this.onData(peerId, e.data);
+    }
+
+    _sendSignaling(data) {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify(data));
+        }
+    }
 }
