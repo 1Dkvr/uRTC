@@ -38,10 +38,12 @@ export class uRTC {
    * Generates an offer to be sent to a peer
    */
   async createOffer() {
+    console.log("uRTC: Button clicked, starting offer..."); // Ajoute ça
     this.dataChannel = this.connection.createDataChannel("uRTC-Bus");
     this._bindChannelEvents();
     const offer = await this.connection.createOffer();
     await this.connection.setLocalDescription(offer);
+    console.log("uRTC: Local description set, gathering ICE..."); // Et ça
   }
 
   /**
