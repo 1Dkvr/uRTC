@@ -12,7 +12,10 @@ import { LocalBS } from "https://1dkvr.github.io/FrameKit/core/js/BrowserStorage
  */
 export class uRTC {
     constructor(config = {}) {
-        this.room = config.room || `${Ø1D.alias}_room`;
+        // Sécurisation de l'alias pour éviter les erreurs d'import
+        const defaultRoom = (window.Ø1D && Ø1D.alias) ? `${Ø1D.alias}_room` : 'lobby_uRTC';
+        
+        this.room = config.room || defaultRoom;
         this.userId = this._getPersistentId();
         this.peers = {}; 
         this.storageKey = `uRTC_mesh_${this.room}`;
@@ -41,16 +44,22 @@ export class uRTC {
                 "iceServers": [
                     { urls: "stun:stun.l.google.com:19302" },
                     { urls: "stun:stun1.l.google.com:19302" }
-                ]
+                ] 
             }
         });
 
         this.instance.on("open", () => {
+            // Premier scan immédiat
             this._discoverAndMesh();
-            setInterval(() => this._discoverAndMesh(), 10000);
+            
+            // On réduit à 5s pour plus de réactivité en mesh
+            setInterval(() => this._discoverAndMesh(), 5000);
+
+            // Écouteur Storage pour réagir instantanément au nouvel onglet
             window.addEventListener("storage", (e) => {
                 if (e.key === this.storageKey) this._discoverAndMesh();
             });
+            
             this.onStatusChange(this.getStats());
         });
 
@@ -61,13 +70,23 @@ export class uRTC {
     _discoverAndMesh() {
         let registry = LocalBS.get(this.storageKey) || {};
         const now = Date.now();
+        
+        // On s'inscrit
         registry[this.userId] = now;
-        for (let id in registry) { if (now - registry[id] > 15000) delete registry[id]; }
+        
+        // Nettoyage des fantômes
+        for (let id in registry) { 
+            if (now - registry[id] > 15000) delete registry[id]; 
+        }
         LocalBS.set(this.storageKey, registry);
 
+        // Tentative de connexion aux autres
         Object.keys(registry).forEach(targetId => {
             if (targetId !== this.userId && !this.peers[targetId]) {
-                if (this.userId < targetId) this.connect(targetId);
+                // Stratégie de poignée de main : Le plus petit ID appelle le plus grand
+                if (this.userId < targetId) {
+                    this.connect(targetId);
+                }
             }
         });
     }
@@ -94,11 +113,20 @@ export class uRTC {
     }
 
     send(payload, targetId = null, type = "text") {
-        const envelope = { type, payload, target: targetId, timestamp: new Date().toISOString(), sender: this.userId };
+        const envelope = { 
+            type, 
+            payload, 
+            target: targetId, 
+            timestamp: new Date().toISOString(), 
+            sender: this.userId 
+        };
+        
         if (targetId && this.peers[targetId]) {
             this.peers[targetId].send(envelope);
         } else {
-            Object.values(this.peers).forEach(conn => { if (conn.open) conn.send(envelope); });
+            Object.values(this.peers).forEach(conn => { 
+                if (conn.open) conn.send(envelope); 
+            });
         }
         return envelope;
     }
@@ -126,6 +154,10 @@ export class uRTC {
     }
 
     getStats() {
-        return { myId: this.userId, activeConnections: Object.keys(this.peers).length, peers: Object.keys(this.peers) };
+        return { 
+            myId: this.userId, 
+            activeConnections: Object.keys(this.peers).length, 
+            peers: Object.keys(this.peers) 
+        };
     }
 }
