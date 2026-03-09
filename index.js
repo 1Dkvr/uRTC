@@ -10,99 +10,62 @@ import { Ø1D } from "./Humans.js";
  * @updated 2026-03-09
  */
 export class uRTC {
-    constructor(apiKey) {
-        this.apiKey = apiKey; // Ton ID Scaledrone
-        this.drone = null;
-        this.room = null;
-        this.peers = {};
+    constructor() {
+        // @ts-ignore (PeerJS importé via CDN dans le HTML)
+        this.peer = new Peer({
+            config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }] }
+        });
+
+        this.connections = {};
         this.localStream = null;
 
-        // Configuration ICE standard
-        this.config = {
-            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-        };
+        // Callbacks
+        this.onID = (id) => {}; 
+        this.onPeerConnect = (conn) => {};
+        this.onStream = (stream, id) => {};
+        this.onData = (data, id) => {};
 
-        // Callbacks publics
-        this.onPeerConnect = (peerId) => {};
-        this.onData = (peerId, data) => {};
-        this.onStream = (peerId, stream) => {};
+        this._setupPeer();
     }
 
-    /**
-     * Rejoindre une salle de manière automatique
-     */
-    join(roomName) {
-        // @ts-ignore - Scaledrone est importé dans le HTML
-        this.drone = new Scaledrone(this.apiKey);
-
-        this.drone.on('open', error => {
-            if (error) return console.error(error);
-            this.room = this.drone.subscribe(`observable-${roomName}`);
-            
-            this.room.on('members', members => {
-                // Si on est plusieurs, on initie la connexion avec les autres
-                members.forEach(member => {
-                    if (member.id !== this.drone.clientId) {
-                        this._initPeer(member.id, true);
-                    }
-                });
-            });
-
-            this.room.on('data', (message, member) => {
-                if (member.id === this.drone.clientId) return;
-                this._handleSignaling(member.id, message);
-            });
+    _setupPeer() {
+        this.peer.on('open', id => this.onID(id));
+        
+        // Quand quelqu'un nous appelle (Data)
+        this.peer.on('connection', conn => this._bindConn(conn));
+        
+        // Quand quelqu'un nous appelle (Vidéo/Audio)
+        this.peer.on('call', call => {
+            call.answer(this.localStream);
+            call.on('stream', stream => this.onStream(stream, call.peer));
         });
     }
 
-    async addStream(videoElementId) {
+    /**
+     * Se connecter à un autre appareil via son ID
+     */
+    connect(remoteId) {
+        const conn = this.peer.connect(remoteId);
+        this._bindConn(conn);
+
+        if (this.localStream) {
+            const call = this.peer.call(remoteId, this.localStream);
+            call.on('stream', stream => this.onStream(stream, remoteId));
+        }
+    }
+
+    async addStream() {
         this.localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        if (videoElementId) document.getElementById(videoElementId).srcObject = this.localStream;
         return this.localStream;
     }
 
-    _initPeer(peerId, isOfferer) {
-        const pc = new RTCPeerConnection(this.config);
-        this.peers[peerId] = pc;
-
-        if (this.localStream) {
-            this.localStream.getTracks().forEach(t => pc.addTrack(t, this.localStream));
-        }
-
-        pc.onicecandidate = e => {
-            if (e.candidate) this._sendSig(peerId, { candidate: e.candidate });
-        };
-
-        pc.ontrack = e => this.onStream(peerId, e.streams[0]);
-
-        if (isOfferer) {
-            pc.onnegotiationneeded = async () => {
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-                this._sendSig(peerId, { sdp: pc.localDescription });
-            };
-        }
-
-        return pc;
+    _bindConn(conn) {
+        this.connections[conn.peer] = conn;
+        conn.on('open', () => this.onPeerConnect(conn));
+        conn.on('data', data => this.onData(data, conn.peer));
     }
 
-    async _handleSignaling(peerId, message) {
-        if (!this.peers[peerId]) this._initPeer(peerId, false);
-        const pc = this.peers[peerId];
-
-        if (message.sdp) {
-            await pc.setRemoteDescription(new RTCSessionDescription(message.sdp));
-            if (pc.remoteDescription.type === 'offer') {
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-                this._sendSig(peerId, { sdp: pc.localDescription });
-            }
-        } else if (message.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
-        }
-    }
-
-    _sendSig(peerId, data) {
-        this.drone.publish({ room: this.room.name, message: data });
+    broadcast(data) {
+        Object.values(this.connections).forEach(c => c.send(data));
     }
 }
