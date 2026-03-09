@@ -3,7 +3,7 @@ import { Ø1D } from "./Humans.js";
 /**
  * @class uRTC
  * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization. Multi-peer WebRTC wrapper for high-speed P2P sync and media.
- * @version 1.0.1411
+ * @version 1.0.1415
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
@@ -15,10 +15,8 @@ export class uRTC {
         this.id = null;
         this.peer = null;
         this.connections = {};
-        
         this.onConnected = () => {};
         this.onMessage = (m) => {};
-
         this._loadAndInit();
     }
 
@@ -33,60 +31,65 @@ export class uRTC {
         this._startPeer();
     }
 
-    _autoConnect() {
-        const lastPeer = localStorage.getItem('uRTC_last_peer_' + this.room);
-        // Si un ID existe et que ce n'est pas le mien, je tente la connexion
-        if (lastPeer && lastPeer !== this.id) {
-            console.log("uRTC: Tentative de connexion automatique vers", lastPeer);
-            this.connect(lastPeer);
-        }
-        // J'enregistre mon ID pour les futurs onglets
-        localStorage.setItem('uRTC_last_peer_' + this.room, this.id);
-    }
-
     _startPeer() {
         this.peer = new Peer();
-
         this.peer.on('open', (id) => {
             this.id = id;
             console.log("uRTC: Mon ID est " + id);
-            this._autoConnect();
+            // On attend 500ms pour laisser le serveur PeerJS souffler
+            setTimeout(() => this._autoConnect(), 500);
         });
 
         this.peer.on('connection', (conn) => this._setupConn(conn));
 
         this.peer.on('error', (err) => {
             console.warn("uRTC Peer Error:", err.type);
-            
-            // SI L'AUTRE N'EST PAS ENCORE PRÊT, ON RÉESSAIE DANS 2 SECONDES
-            if (err.type === 'peer-unavailable') {
-                const lastPeer = localStorage.getItem('uRTC_last_peer_' + this.room);
-                if (lastPeer) {
-                    console.log("uRTC: Peer pas encore prêt, nouvel essai dans 2s...");
-                    setTimeout(() => this.connect(lastPeer), 2000);
-                }
+            // Si le peer n'existe plus ou n'est pas prêt
+            if (err.type === 'peer-unavailable' || err.type === 'webrtc') {
+                console.log("uRTC: Conflit ou indisponible, nouvel essai dans 3s...");
+                setTimeout(() => this._autoConnect(), 3000);
             }
         });
     }
 
+    _autoConnect() {
+        const lastPeer = localStorage.getItem('uRTC_last_peer_' + this.room);
+        
+        // RÈGLE DE POLITESSE : 
+        // On n'appelle que si l'autre ID est "plus grand" que le nôtre alphabétiquement.
+        // Ça évite que les deux s'appellent en même temps.
+        if (lastPeer && lastPeer !== this.id) {
+            if (this.id < lastPeer) { 
+                console.log("uRTC: Je suis l'appelant vers", lastPeer);
+                this.connect(lastPeer);
+            } else {
+                console.log("uRTC: J'attends que l'autre m'appelle (" + lastPeer + ")");
+            }
+        }
+        
+        localStorage.setItem('uRTC_last_peer_' + this.room, this.id);
+    }
+
     connect(remoteId) {
         if (this.connections[remoteId]) return;
-        const conn = this.peer.connect(remoteId, { serialization: "json" });
+        const conn = this.peer.connect(remoteId, { 
+            serialization: "json",
+            reliable: true 
+        });
         this._setupConn(conn);
     }
 
     _setupConn(conn) {
         conn.on('open', () => {
+            if (this.connections[conn.peer]) return;
             this.connections[conn.peer] = conn;
             this.onConnected();
-            console.log("uRTC: Connecté à " + conn.peer);
+            console.log("uRTC: ✅ CONNECTÉ À " + conn.peer);
         });
 
-        conn.on('data', (data) => {
-            this.onMessage(data);
-        });
-
+        conn.on('data', (data) => this.onMessage(data));
         conn.on('close', () => delete this.connections[conn.peer]);
+        conn.on('error', () => {});
     }
 
     send(msg) {
