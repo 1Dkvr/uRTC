@@ -3,7 +3,7 @@ import { Ø1D } from "./Humans.js";
 /**
  * @class uRTC
  * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization.
- * @version 1.0.200
+ * @version 1.0.220
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
@@ -12,65 +12,86 @@ import { Ø1D } from "./Humans.js";
 export class uRTC {
   constructor(config = {}) {
     this.config = {
+      // Un seul serveur STUN rapide pour éviter les timeouts
       iceServers: config.iceServers || [{ urls: "stun:stun.l.google.com:19302" }]
     };
 
     this.connection = new RTCPeerConnection(this.config);
     this.dataChannel = null;
 
-    // Internal state
+    // État interne pour les fichiers
     this._receiveBuffer = [];
     this._receivedSize = 0;
     this._currentFileMeta = null;
 
-    // Public Events
+    // Événements Publics
     this.onOpen = () => {};
     this.onData = (data) => {};
     this.onSignal = (signal) => {};
     this.onFileProgress = (p) => {};
-    this.onFileReceived = (b, n) => {};
+    this.onFileReceived = (blob, name) => {};
 
     this._setupICE();
     this._listenForRemoteChannel();
   }
 
   /**
-   * Generates an offer to be sent to a peer
+   * Crée une offre WebRTC et déclenche onSignal immédiatement.
    */
   async createOffer() {
-    console.log("uRTC: Button clicked, starting offer..."); // Ajoute ça
-    this.dataChannel = this.connection.createDataChannel("uRTC-Bus");
-    this._bindChannelEvents();
-    const offer = await this.connection.createOffer();
-    await this.connection.setLocalDescription(offer);
-    console.log("uRTC: Local description set, gathering ICE..."); // Et ça
-  }
+    try {
+      this.dataChannel = this.connection.createDataChannel("uRTC-Bus");
+      this._bindChannelEvents();
 
-  /**
-   * Accepts a remote signal (Offer or Answer)
-   * @param {string} signalData - The JSON stringified SDP
-   */
-  async handleSignal(signalData) {
-    const signal = JSON.parse(signalData);
-    if (signal.type === "offer") {
-      await this.connection.setRemoteDescription(new RTCSessionDescription(signal));
-      const answer = await this.connection.createAnswer();
-      await this.connection.setLocalDescription(answer);
-    } else if (signal.type === "answer") {
-      await this.connection.setRemoteDescription(new RTCSessionDescription(signal));
+      const offer = await this.connection.createOffer();
+      await this.connection.setLocalDescription(offer);
+
+      // OPTIMISATION : On n'attend pas les candidats ICE. 
+      // On envoie la description locale dès qu'elle est prête.
+      this.onSignal(JSON.stringify(this.connection.localDescription));
+    } catch (err) {
+      console.error("uRTC: Error creating offer", err);
     }
   }
 
+  /**
+   * Gère un signal entrant (Offre ou Réponse)
+   * @param {string} signalData - JSON stringifié du SDP
+   */
+  async handleSignal(signalData) {
+    try {
+      const signal = JSON.parse(signalData);
+      const desc = new RTCSessionDescription(signal);
+      await this.connection.setRemoteDescription(desc);
+
+      if (signal.type === "offer") {
+        const answer = await this.connection.createAnswer();
+        await this.connection.setLocalDescription(answer);
+        // Envoi immédiat de la réponse
+        this.onSignal(JSON.stringify(this.connection.localDescription));
+      }
+    } catch (err) {
+      console.error("uRTC: Error handling signal", err);
+    }
+  }
+
+  /**
+   * Envoie du texte ou un objet JSON
+   */
   send(payload) {
     if (!this._isChannelReady()) return;
     const data = typeof payload === "object" ? JSON.stringify({ type: 'json', content: payload }) : payload;
     this.dataChannel.send(data);
   }
 
+  /**
+   * Envoie un fichier par morceaux (chunks)
+   */
   async sendFile(file) {
     if (!this._isChannelReady()) return;
     const CHUNK_SIZE = 16384;
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    
     this.send({ type: 'file-meta', name: file.name, size: file.size });
 
     for (let i = 0; i < totalChunks; i++) {
@@ -82,36 +103,21 @@ export class uRTC {
     }
   }
 
-  // --- PRIVATE ---
+  // --- MÉTHODES PRIVÉES ---
 
   _setupICE() {
     this.connection.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log("uRTC: New ICE Candidate found...");
-        // Optionnel : on pourrait envoyer les candidats un par un, 
-        // mais pour ton test manuel, on attend le pack complet.
-      } else {
-        // event.candidate est nul : la recherche est terminée !
-        console.log("uRTC: ICE Gathering Complete.");
-        if (this.connection.localDescription) {
-          this.onSignal(JSON.stringify(this.connection.localDescription));
-        }
-      }
-    };
-
-    // Sécurité pour Mobile : Si après 3 secondes on n'a pas fini, 
-    // on force quand même l'affichage du signal actuel
-    this.connection.onicegatheringstatechange = () => {
-      console.log("uRTC: Gathering State ->", this.connection.iceGatheringState);
-      if (this.connection.iceGatheringState === "complete") {
+      // Dès qu'un candidat est trouvé, on met à jour le signal via onSignal
+      // Cela permet de compléter l'offre au fur et à mesure
+      if (this.connection.localDescription) {
         this.onSignal(JSON.stringify(this.connection.localDescription));
       }
     };
   }
 
   _listenForRemoteChannel() {
-    this.connection.ondatachannel = (e) => {
-      this.dataChannel = e.channel;
+    this.connection.ondatachannel = (event) => {
+      this.dataChannel = event.channel;
       this._bindChannelEvents();
     };
   }
@@ -119,7 +125,7 @@ export class uRTC {
   _bindChannelEvents() {
     if (!this.dataChannel) return;
     this.dataChannel.onopen = () => this.onOpen();
-    this.dataChannel.onmessage = (e) => this._handleMessage(e.data);
+    this.dataChannel.onmessage = (event) => this._handleMessage(event.data);
   }
 
   _handleMessage(data) {
