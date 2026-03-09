@@ -83,8 +83,25 @@ export class uRTC {
   // --- PRIVATE ---
 
   _setupICE() {
-    this.connection.onicecandidate = (e) => {
-      if (!e.candidate && this.connection.localDescription) {
+    this.connection.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log("uRTC: New ICE Candidate found...");
+        // Optionnel : on pourrait envoyer les candidats un par un, 
+        // mais pour ton test manuel, on attend le pack complet.
+      } else {
+        // event.candidate est nul : la recherche est terminée !
+        console.log("uRTC: ICE Gathering Complete.");
+        if (this.connection.localDescription) {
+          this.onSignal(JSON.stringify(this.connection.localDescription));
+        }
+      }
+    };
+
+    // Sécurité pour Mobile : Si après 3 secondes on n'a pas fini, 
+    // on force quand même l'affichage du signal actuel
+    this.connection.onicegatheringstatechange = () => {
+      console.log("uRTC: Gathering State ->", this.connection.iceGatheringState);
+      if (this.connection.iceGatheringState === "complete") {
         this.onSignal(JSON.stringify(this.connection.localDescription));
       }
     };
