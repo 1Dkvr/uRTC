@@ -11,7 +11,7 @@ console.warn(Ø1D.brand);
  * @license Apache-2.0
  * @updated 26.03.08
  */
-class uRTC {
+export class uRTC {
   /**
    * @param {Object} config - Configuration object
    * @param {Array} config.iceServers - List of STUN/TURN servers
