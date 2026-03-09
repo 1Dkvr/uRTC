@@ -1,9 +1,10 @@
 import { Ø1D } from "./Humans.js";
+import { LocalBS } from "https://1dkvr.github.io/FrameKit/core/js/BrowserStorage.js";
 
 /**
  * @class uRTC
  * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization. Multi-peer WebRTC wrapper for high-speed P2P sync and media.
- * @version 1.0.1415
+ * @version 1.0.1423
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
@@ -53,21 +54,37 @@ export class uRTC {
     }
 
     _autoConnect() {
-        const lastPeer = localStorage.getItem('uRTC_last_peer_' + this.room);
-        
-        // RÈGLE DE POLITESSE : 
-        // On n'appelle que si l'autre ID est "plus grand" que le nôtre alphabétiquement.
-        // Ça évite que les deux s'appellent en même temps.
-        if (lastPeer && lastPeer !== this.id) {
-            if (this.id < lastPeer) { 
-                console.log("uRTC: Je suis l'appelant vers", lastPeer);
-                this.connect(lastPeer);
-            } else {
-                console.log("uRTC: J'attends que l'autre m'appelle (" + lastPeer + ")");
+        setInterval(() => {
+            // On stocke l'ID actuel
+            LocalBS.set('uRTC_last_peer_' + this.room, this.id);
+            
+            // On récupère la liste des peers actifs
+            let allPeers = LocalBS.get('uRTC_active_peers_' + this.room);
+            
+            // Sécurité : si c'est une string, on parse, sinon on initialise
+            if (typeof allPeers === 'string') allPeers = JSON.parse(allPeers);
+            if (!allPeers || typeof allPeers !== 'object') allPeers = {};
+    
+            allPeers[this.id] = Date.now();
+            
+            // Nettoyage des peers inactifs
+            for (let peerId in allPeers) {
+                if (Date.now() - allPeers[peerId] > 5000) delete allPeers[peerId];
             }
-        }
-        
-        localStorage.setItem('uRTC_last_peer_' + this.room, this.id);
+    
+            // On enregistre (LocalBS s'occupe probablement de la stringification selon sa config)
+            LocalBS.set('uRTC_active_peers_' + this.room, allPeers);
+    
+            // Recherche du partenaire
+            const otherId = Object.keys(allPeers).find(pid => pid !== this.id);
+            
+            if (otherId && !this.connections[otherId]) {
+                if (this.id < otherId) {
+                    console.log("uRTC: Connexion vers le peer FrameKit :", otherId);
+                    this.connect(otherId);
+                }
+            }
+        }, 1000);
     }
 
     connect(remoteId) {
