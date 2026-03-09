@@ -41,7 +41,7 @@ export class uRTC {
     this._setupICE();
     this._listenForRemoteChannel();
 
-    this.signalingServer = config.signalingServer || "wss://signaler.u-rtc.io"; 
+    this.signalingServer = config.signalingServer || "wss://signaling.simplewebrtc.com/v1/";
     this.socket = null;
   }
 
