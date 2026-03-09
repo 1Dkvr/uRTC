@@ -4,7 +4,7 @@ import { LocalBS } from "https://1dkvr.github.io/FrameKit/core/js/BrowserStorage
 /**
  * @class uRTC
  * @description An ultra-performant, zero-dependency WebRTC wrapper for P2P data & file synchronization. Multi-peer WebRTC wrapper for high-speed P2P sync and media.
- * @version 1.0.1430
+ * @version 1.0.1432
  * @author 1D
  * @copyright © 2026 Hold'inCorp. All rights reserved.
  * @license Apache-2.0
@@ -37,54 +37,49 @@ export class uRTC {
         this.peer.on('open', (id) => {
             this.id = id;
             console.log("uRTC: Mon ID est " + id);
-            // On attend 500ms pour laisser le serveur PeerJS souffler
-            setTimeout(() => this._autoConnect(), 500);
+            // 1. On lance une première vérification IMMÉDIATE
+            this._checkPeers(); 
+            // 2. Puis on surveille toutes les 5 secondes
+            setInterval(() => this._checkPeers(), 5000);
         });
 
         this.peer.on('connection', (conn) => this._setupConn(conn));
-
+        
         this.peer.on('error', (err) => {
-            console.warn("uRTC Peer Error:", err.type);
-            // Si le peer n'existe plus ou n'est pas prêt
-            if (err.type === 'peer-unavailable' || err.type === 'webrtc') {
-                console.log("uRTC: Conflit ou indisponible, nouvel essai dans 3s...");
-                setTimeout(() => this._autoConnect(), 3000);
+            if (err.type === 'peer-unavailable') {
+                console.log("uRTC: Le partenaire n'est pas encore prêt...");
             }
         });
     }
 
-    _autoConnect() {
-        // Fréquence de rafraîchissement : 5 secondes
-        setInterval(() => {
-            // 1. On récupère la liste des peers
-            let allPeers = LocalBS.get('uRTC_active_peers_' + this.room) || {};
-            if (typeof allPeers === 'string') allPeers = JSON.parse(allPeers);
-    
-            const now = Date.now();
-    
-            // 2. On s'ajoute/met à jour
-            allPeers[this.id] = now;
-    
-            // 3. NETTOYAGE STRICT : On vire tout ce qui n'a pas bougé depuis 15s
-            for (let peerId in allPeers) {
-                if (now - allPeers[peerId] > 15000) delete allPeers[peerId];
+    _checkPeers() {
+        if (!this.id) return;
+
+        let allPeers = LocalBS.get('uRTC_active_peers_' + this.room) || {};
+        if (typeof allPeers === 'string') allPeers = JSON.parse(allPeers);
+
+        const now = Date.now();
+        allPeers[this.id] = now;
+
+        // Nettoyage des vieux peers (> 15s)
+        for (let pid in allPeers) {
+            if (now - allPeers[pid] > 15000) delete allPeers[pid];
+        }
+
+        LocalBS.set('uRTC_active_peers_' + this.room, allPeers);
+
+        // Recherche d'un partenaire
+        const otherId = Object.keys(allPeers).find(pid => pid !== this.id);
+        
+        if (otherId && !this.connections[otherId]) {
+            // Politesse : le plus petit ID appelle
+            if (this.id < otherId) {
+                console.log("uRTC: Tentative de liaison vers", otherId);
+                this.connect(otherId);
+            } else {
+                console.log("uRTC: J'attends l'appel de", otherId);
             }
-    
-            // 4. On sauvegarde
-            LocalBS.set('uRTC_active_peers_' + this.room, allPeers);
-    
-            // 5. Tentative de connexion
-            const otherId = Object.keys(allPeers).find(pid => pid !== this.id);
-            
-            if (otherId && !this.connections[otherId]) {
-                // RÈGLE : Le plus "petit" ID appelle le plus "grand"
-                // Ça garantit qu'une seule tentative a lieu à la fois
-                if (this.id < otherId) {
-                    console.log("uRTC: Tentative de liaison vers", otherId);
-                    this.connect(otherId);
-                }
-            }
-        }, 5000); // 5 secondes pour préserver les perfs
+        }
     }
 
     connect(remoteId) {
