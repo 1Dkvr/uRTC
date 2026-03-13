@@ -4,13 +4,13 @@ import { LocalBS } from "https://1dkvr.github.io/FrameKit/core/js/BrowserStorage
 /**
  * @class uRTC
  * @description Full Mesh Peer-to-Peer. End-to-End Encrypted (Native WebRTC). Manages a WebRTC mesh network with persistent identity and auto-discovery. Support: Unicast (1:1), Multicast (1:N), Mesh (N:N)
- * @version 1.3.1655
+ * @version 1.5.1047
  * @author 1D
  * @copyright © 2026 Hold"inCorp. All rights reserved.
  * @license Apache-2.0
- * @updated 2026-03-09
+ * @updated 2026.03.13
  */
-export class uRTC {
+export default class uRTC {
     constructor(config = {}) {
         // Sécurisation de l'alias pour éviter les erreurs d'import
         const defaultRoom = (window.Ø1D && Ø1D.alias) ? `${Ø1D.alias}_room` : 'lobby_uRTC';
